@@ -18,116 +18,72 @@
  */
 
 // HTTP 모듈 설정
+const { rejects } = require('assert')
 const http = require('http')
-
-// 타입을 미리 정의하여 VScode가 빠르게 문제가 생긴 것을 알려준다,
-/**
- * 현재는 jsdoc 사용중
- * jsdoc은 주석을 파악하여 자동으로 타입 변환을 해준다.
- * 타입스크립트가 jddoc를 파싱해서 미리 에러를 내준다.
- * 타입을 미리 써가며 문서화를 하면 코딩할때 편한 장점이 있다.
- */
-
-/**
- * @typedef Post
- * @property {string} id
- * @property {string} title
- * @property {string} content
- */
-
-/** @type {Post[]} */
-const posts = [
-  {
-    id: 'my_first_post',
-    title: 'My first post',
-    content: 'Hello!',
-  },
-  {
-    id: 'my_second_post',
-    title: '나의 두번째 포스트',
-    content: 'Second post!',
-  },
-]
-
-/**
- * Post
- *
- * 포스트 전체 조회 리스트 API
- * GET /posts
- *
- * 특정한 포스트 조회 API
- * GET /posts/:id
- *
- * POST /posts
- *
- */
+const { resolve } = require('path/posix')
+const { routes } = require('./api')
 
 const server = http.createServer((req, res) => {
-  const POSTS_ID_REGEX = /^\/posts\/([a-zA-Z0-9-_]+)$/
-  const postIdRegexResult =
-    (req.url && POSTS_ID_REGEX.exec(req.url)) || undefined
+  async function main() {
+    // async 함수를 만들어 안에 넣어서 route.callback()를 await할 수 있게 만들어준다
+    // 조건에 일치하는 route를 찾는다.
+    const route = routes.find(
+      (_route) =>
+        req.url &&
+        req.method &&
+        _route.url.test(req.url) &&
+        _route.method === req.method
+    )
 
-  // /posts는 모든 포스트의 목록을 가져오는 API postIdRegexResult는 하나의 포스트의 정보를 구체적으로 가져오는 API
-  // 1. 전체 posts 읽기 API
-  if (req.url === '/posts' && req.method === 'GET') {
-    const result = {
-      posts: posts.map((post) => ({
-        id: post.id,
-        title: post.title,
-      })),
-      totalCount: posts.length,
-    }
-
-    res.statusCode = 200
-    res.setHeader('Content-type', 'application/json; encoding=utf=8') // 응답의 타입을 json문서로 보내고 있기 때문에 쉽게 알아보기 위해서는 json형태로 content타입이 내려가는 것을 알려주어야 한다.
-    res.end(JSON.stringify(result))
-  } else if (postIdRegexResult && req.method === 'GET') {
-    // 2. posts 하나 읽기 API
-    // GET /posts/:id
-    // 하나의 posts만 가져오고 싶을경우? postId와 동일한 posts를 찾으면 된다
-    const postId = postIdRegexResult[1] // 아이디를 통해 체크 하기위한 부분
-    const post = posts.find((_post) => _post.id === postId)
-
-    if (post) {
-      res.statusCode = 200
-      res.setHeader('Content-type', 'application/json; encoding=utf=8') // 가독성이 좋아지는 장점이 있다.
-      res.end(JSON.stringify(post))
-    } else {
+    if (!req.url || !route) {
       res.statusCode = 404
-      res.end('Post Not found.')
+      res.end('Not found.')
+      return
     }
-  } else if (req.url === '/posts' && req.method === 'POST') {
-    // 3. posts 만들기 API
-    /**
-     * 포스트를 새로 만드면 입력을 기대하는 것은 타이틀과 컨텐트
-     * POST 방식으로 http로 요청을 줄때 http POST localhost:4000/posts title=foo content=bar --print=hHbB 로 요청을 주면 되며
-     * --print=hHbB에서 h와 b는 각각 응답의 헤더와 body를 말하고
-     * H와 B는 각각 요청의 헤더와 body를 말한다.
-     */
-    req.setEncoding('utf-8') // 바이너리 값 출력 막기위해 작성
-    req.on('data', (data) => {
-      /**
-       *  @typedef CreatePostBody
-       *  @property {string} title
-       *  @property {string} content
-       */
 
-      /** @type {CreatePostBody} */
+    const regexResult = route.url.exec(req.url)
 
-      const body = JSON.parse(data) // JSON 데이터 파싱
-      posts.push({
-        id: body.title.toLowerCase().replace(/\s/g, '_'), // id는 타이틀을 소문자로 정규식을 사용하여 모든 공백울 공백을 언더바로 바꿔준다.
-        title: body.title,
-        content: body.content,
-      })
-    })
+    if (!regexResult) {
+      res.statusCode = 404
+      res.end('Not found.')
+      return
+    }
 
-    res.statusCode = 200
-    res.end('Creating post')
-  } else {
-    res.statusCode = 404
-    res.end('Not found!!.')
+    /** @type {Object.<string, *> | undefined} */
+    const reqBody =
+      (req.headers['content-type'] === 'application/json' && // 이쪽 콜백 안에서 data를 받아야 하는데 콜백 밖과 연결점이 없기 때문에 promise 를 사용한다.
+        // 필요없는 경우에도 데이터를 받아내는 것을 막기 위해 json헤더를 조건지정한다.
+        // application/json인 경우에만 돌게 되고 있으면 새 promise를 만들어서 await을 한다.
+        // 그게 아니라면 undefined가 돌아간다.
+        // 인라인 함수를 만들어서 바로 await하는 것을 확인할 수 있다.
+        (await new Promise((resolve) => {
+          req.setEncoding('utf-8')
+          req.on('data', (data) => {
+            try {
+              // 데이터를 파싱한 것을 사용해 JSON 오브젝트로 받는다
+              resolve(JSON.parse(data))
+            } catch {
+              // @ts-ignore
+              rejects(new Error('Ill-formed json'))
+            }
+          })
+        }))) ||
+      undefined
+
+    const result = await route.callback(regexResult, reqBody) // 콜백한 것을 result에 받으며 regexResult를 콜백에 인자로 넘겨준다.
+    result.statusCode = result.statusCode
+
+    // body가 string 또는 Object 둘중 하나만 가지도록 분개처리
+    if (typeof result.body == 'string') {
+      res.end(result.body)
+    } else {
+      // 무조건 JSON으로 받기 떄문에 헤더 정리를 히고 JSON.stringify를 사용해 바디를 JSON으로 받는다
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify(result.body))
+    }
   }
+
+  main()
 })
 
 const PORT = 4000
